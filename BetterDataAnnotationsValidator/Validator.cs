@@ -7,8 +7,10 @@ using System.Linq;
 
 namespace BetterDataAnnotationsValidator
 {
-	public class Validator
+	public class Validator<T> : IValidator
 	{
+		private static Lazy<ObjectMetadata> _metadataCache = new Lazy<ObjectMetadata>(() => new ObjectMetadata(typeof(T)));
+
 		/// <summary>
 		/// Set to true for compatibility with regular DataAnnotations Validator
 		/// </summary>
@@ -21,9 +23,7 @@ namespace BetterDataAnnotationsValidator
 
 		public bool BreakOnFirstError { get; set; }
 
-		protected static ConcurrentDictionary<Type, ObjectMetadata> Cache { get; } = new ConcurrentDictionary<Type, ObjectMetadata>();
-
-		public ValidationSummary Validate(object instance, ValidationContext context = null)
+		public ValidationSummary Validate(T instance, ValidationContext context = null)
 		{
 			context = context ?? new ValidationContext(instance);
 
@@ -139,7 +139,7 @@ namespace BetterDataAnnotationsValidator
 
 		protected virtual IEnumerable<ValidationAttribute> GetPropertyValidationAttributes(ValidationContext validationContext)
 		{
-			var typeItem = GetMetadata(validationContext.ObjectType);
+			var typeItem = GetMetadata();
 
 			if (typeItem.Properties.TryGetValue(validationContext.MemberName, out var attributes))
 			{
@@ -151,76 +151,21 @@ namespace BetterDataAnnotationsValidator
 
 		protected virtual IEnumerable<ValidationAttribute> GetTypeValidationAttributes(ValidationContext validationContext)
 		{
-			var item = GetMetadata(validationContext.ObjectType);
+			var item = GetMetadata();
 			return item.Attributes;
 		}
 
-		protected ObjectMetadata GetMetadata(Type type)
+		protected virtual ObjectMetadata GetMetadata()
 		{
-			return Cache.GetOrAdd(type, CreateMetadata);
+			return _metadataCache.Value;
 		}
 
-		protected virtual ObjectMetadata CreateMetadata(Type type)
+		ValidationSummary IValidator.Validate(ValidationContext context)
 		{
-			return new ObjectMetadata(type);
+			if(!(context.ObjectInstance is T))
+				throw new InvalidOperationException("Instance is not of type " + typeof(T).FullName);
+
+			return Validate((T)context.ObjectInstance, context);
 		}
-
-		public class ObjectMetadata
-		{
-			public ObjectMetadata()
-			{
-				
-			}
-
-			public ObjectMetadata(Type type)
-			{
-				Attributes = TypeDescriptor.GetAttributes(type).Cast<Attribute>().OfType<ValidationAttribute>().ToList();
-
-				var properties = TypeDescriptor.GetProperties(type);
-
-				foreach (PropertyDescriptor property in properties)
-				{
-					var attributes = new List<Attribute>(property.Attributes.Cast<Attribute>());
-					var typeAttributes = TypeDescriptor.GetAttributes(property.PropertyType).Cast<Attribute>();
-
-					// This logic from MS Reference source ValidationAttributeStore.cs 
-
-					bool removedAttribute = false;
-					foreach (Attribute attr in typeAttributes)
-					{
-						for (int i = attributes.Count - 1; i >= 0; --i)
-						{
-							// We must use ReferenceEquals since attributes could Match if they are the same.
-							// Only ReferenceEquals will catch actual duplications.
-							if (ReferenceEquals(attr, attributes[i]))
-							{
-								attributes.RemoveAt(i);
-								removedAttribute = true;
-							}
-						}
-					}
-					var attributesToUse = removedAttribute ? new AttributeCollection(attributes.ToArray()) : property.Attributes;
-
-					Properties[property.Name] = attributesToUse.OfType<ValidationAttribute>().ToList();
-				}
-			}
-
-			public IEnumerable<ValidationAttribute> Attributes { get; set; }
-
-			public Dictionary<string, List<ValidationAttribute>> Properties { get; } =
-				new Dictionary<string, List<ValidationAttribute>>();
-		}
-	}
-
-	public class ValidationSummary
-	{
-		public ValidationSummary(List<ValidationResult> results)
-		{
-			Results = results;
-			Success = Results.Count == 0;
-		}
-
-		public bool Success { get; }
-		public List<ValidationResult> Results { get; private set; }
 	}
 }
