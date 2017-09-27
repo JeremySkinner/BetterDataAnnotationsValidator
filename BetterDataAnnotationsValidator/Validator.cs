@@ -9,7 +9,19 @@ namespace BetterDataAnnotationsValidator
 {
 	public class Validator
 	{
-		static ConcurrentDictionary<Type, ObjectMetadata> _cache = new ConcurrentDictionary<Type, ObjectMetadata>();
+		/// <summary>
+		/// Set to true for compatibility with regular DataAnnotations Validator
+		/// </summary>
+		public bool StopIfRequiredValidatorFails { get; set; }
+
+		/// <summary>
+		/// Set to false for compatibility with regular DataAnnotations validator
+		/// </summary>
+		public bool RunModelLevelValidatorsIfPropertyValidatorsFail { get; set; } = true;
+
+		public bool BreakOnFirstError { get; set; }
+
+		protected static ConcurrentDictionary<Type, ObjectMetadata> Cache { get; } = new ConcurrentDictionary<Type, ObjectMetadata>();
 
 		public ValidationSummary Validate(object instance, ValidationContext context = null)
 		{
@@ -17,24 +29,41 @@ namespace BetterDataAnnotationsValidator
 
 			var errors = new List<ValidationResult>();
 			errors.AddRange(GetPropertyValidationErrors(instance, context));
+
+			if (errors.Any() && (RunModelLevelValidatorsIfPropertyValidatorsFail == false || BreakOnFirstError))
+			{
+				return new ValidationSummary(errors);
+			}
+
 			errors.AddRange(GetModelLevelValidationErrors(instance, context));
+
+			if (errors.Any() && (RunModelLevelValidatorsIfPropertyValidatorsFail == false || BreakOnFirstError)) 
+			{
+				return new ValidationSummary(errors);
+			}
 
 			if (instance is IValidatableObject validatable)
 			{
-				var validatableResults = validatable.Validate(context);
-				errors.AddRange(validatableResults);
+				errors.AddRange(GetIValidatableObjectValidationErrors(validatable, context));
 			}
 
 			var summary = new ValidationSummary(errors);
 			return summary;
 		}
 
-		private IEnumerable<ValidationResult> GetModelLevelValidationErrors(object instance, ValidationContext context)
+		protected virtual IEnumerable<ValidationResult> GetIValidatableObjectValidationErrors(IValidatableObject instance,
+			ValidationContext context)
+		{
+			return instance.Validate(context);
+
+		}
+
+		protected virtual IEnumerable<ValidationResult> GetModelLevelValidationErrors(object instance, ValidationContext context)
 		{
 			return GetValidationErrors(instance, context, GetTypeValidationAttributes(context));
 		}
 
-		private IEnumerable<ValidationResult> GetPropertyValidationErrors(object instance, ValidationContext context)
+		protected virtual IEnumerable<ValidationResult> GetPropertyValidationErrors(object instance, ValidationContext context)
 		{
 			var properties = GetProperties(instance, context);
 			var errors = new List<ValidationResult>();
@@ -47,24 +76,25 @@ namespace BetterDataAnnotationsValidator
 			return errors;
 		}
 
-		private static IEnumerable<ValidationResult> GetValidationErrors(object value, ValidationContext validationContext,
+		protected virtual IEnumerable<ValidationResult> GetValidationErrors(object value, ValidationContext validationContext,
 			IEnumerable<ValidationAttribute> attributes)
 		{
 			var errors = new List<ValidationResult>();
 
-			// Get the required validator if there is one and test it first, aborting on failure
 			RequiredAttribute required = attributes.FirstOrDefault(a => a is RequiredAttribute) as RequiredAttribute;
 
 			if (required != null)
 			{
 				var valResult = required.GetValidationResult(value, validationContext);
 
-				if (valResult != ValidationResult.Success)
+				if (valResult != ValidationResult.Success && StopIfRequiredValidatorFails)
 				{
 					errors.Add(valResult);
 					return errors;
 				}
 			}
+
+			if (errors.Any() && BreakOnFirstError) return errors;
 
 			// Iterate through the rest of the validators, skipping the required validator
 			foreach (var attr in attributes)
@@ -76,6 +106,8 @@ namespace BetterDataAnnotationsValidator
 					if (valResult != ValidationResult.Success)
 					{
 						errors.Add(valResult);
+
+						if (BreakOnFirstError) break;
 					}
 				}
 			}
@@ -84,7 +116,7 @@ namespace BetterDataAnnotationsValidator
 		}
 
 
-		private ICollection<KeyValuePair<ValidationContext, object>> GetProperties(object instance,
+		protected virtual ICollection<KeyValuePair<ValidationContext, object>> GetProperties(object instance,
 			ValidationContext validationContext)
 		{
 			var properties = TypeDescriptor.GetProperties(instance);
@@ -105,7 +137,7 @@ namespace BetterDataAnnotationsValidator
 		}
 
 
-		private IEnumerable<ValidationAttribute> GetPropertyValidationAttributes(ValidationContext validationContext)
+		protected virtual IEnumerable<ValidationAttribute> GetPropertyValidationAttributes(ValidationContext validationContext)
 		{
 			var typeItem = GetMetadata(validationContext.ObjectType);
 
@@ -117,19 +149,29 @@ namespace BetterDataAnnotationsValidator
 			return Enumerable.Empty<ValidationAttribute>();
 		}
 
-		private IEnumerable<ValidationAttribute> GetTypeValidationAttributes(ValidationContext validationContext)
+		protected virtual IEnumerable<ValidationAttribute> GetTypeValidationAttributes(ValidationContext validationContext)
 		{
 			var item = GetMetadata(validationContext.ObjectType);
 			return item.Attributes;
 		}
 
-		private ObjectMetadata GetMetadata(Type type)
+		protected ObjectMetadata GetMetadata(Type type)
 		{
-			return _cache.GetOrAdd(type, t => new ObjectMetadata(t));
+			return Cache.GetOrAdd(type, CreateMetadata);
+		}
+
+		protected virtual ObjectMetadata CreateMetadata(Type type)
+		{
+			return new ObjectMetadata(type);
 		}
 
 		public class ObjectMetadata
 		{
+			public ObjectMetadata()
+			{
+				
+			}
+
 			public ObjectMetadata(Type type)
 			{
 				Attributes = TypeDescriptor.GetAttributes(type).Cast<Attribute>().OfType<ValidationAttribute>().ToList();
